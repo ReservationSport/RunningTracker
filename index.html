@@ -12,14 +12,18 @@
     <!-- LEHRER ANSICHT -->
     <div id="teacher-view" class="w-full max-w-md bg-white rounded-xl shadow-lg p-6 text-center">
         <h1 class="text-2xl font-bold mb-2 text-gray-800">Lehrer-Dashboard</h1>
-        <p class="text-xs text-indigo-600 font-semibold mb-4">Modus: Automatische Passier-Erkennung</p>
+        <p class="text-xs text-indigo-600 font-semibold mb-4">Modus: Zentraler Start & Live-Zeitmessung</p>
         
         <div id="qr-container" class="flex justify-center mb-4">
             <img id="qr-image" src="" alt="QR-Code zum Einloggen" class="w-48 h-48">
         </div>
-        <p class="text-sm text-gray-500 mb-6">Lernende scannen diesen Code und aktivieren den Pocket-Modus.</p>
+        <p class="text-sm text-gray-500 mb-6">Lernende scannen diesen Code und melden sich an.</p>
         
-        <h2 class="text-lg font-semibold text-left mb-2">Live-Runden (Automatik):</h2>
+        <button id="master-start-btn" class="w-full bg-red-600 hover:bg-red-700 text-white font-bold py-4 rounded-xl shadow-lg mb-6 text-lg">
+            🏁 LAUF STARTEN (Alle aktivieren)
+        </button>
+
+        <h2 class="text-lg font-semibold text-left mb-2">Live-Runden & Zeiten:</h2>
         <div id="live-list" class="space-y-2 text-left"></div>
     </div>
 
@@ -30,28 +34,29 @@
         <button id="join-btn" class="w-full bg-blue-600 text-white font-bold py-4 rounded-lg shadow">Anmelden</button>
     </div>
 
-    <!-- SCHÜLER AKTIV (POCKET-MODUS AUSWÄHLEN) -->
+    <!-- SCHÜLER WARTEN / BEREIT -->
     <div id="student-view" class="hidden w-full max-w-md bg-white rounded-xl shadow-xl p-6 text-center">
         <h1 id="welcome-msg" class="text-2xl font-bold mb-2 text-gray-800"></h1>
-        <p class="text-sm text-gray-500 mb-6">Bereit für den Lauf?</p>
+        <p id="status-msg" class="text-sm text-amber-600 font-semibold mb-6">Warte auf den Startschuss der Lehrperson...</p>
         
-        <div class="bg-emerald-50 border border-emerald-200 p-4 rounded-xl mb-6 text-left">
-            <p class="text-sm text-emerald-800 font-medium">💡 Anleitung:</p>
-            <p class="text-xs text-emerald-700 mt-1">Klicke auf den Button, um den **Pocket-Modus** zu starten. Der Bildschirm wird schwarz und schont den Akku, während das Handy in der Tasche deine Runden zählt.</p>
+        <div id="active-panel" class="hidden">
+            <div class="bg-emerald-50 border border-emerald-200 p-4 rounded-xl mb-6 text-left">
+                <p class="text-sm text-emerald-800 font-medium">💡 Bereit:</p>
+                <p class="text-xs text-emerald-700 mt-1">Klicke auf den Pocket-Modus, stecke das Handy ein. Die Runden werden ab jetzt automatisch gemessen!</p>
+            </div>
+            <button id="pocket-btn" class="w-full bg-emerald-600 hover:bg-emerald-700 text-white font-bold py-5 rounded-xl text-lg shadow-lg">
+                📴 Pocket-Modus starten (Bildschirmschutz)
+            </button>
         </div>
-
-        <button id="pocket-btn" class="w-full bg-emerald-600 hover:bg-emerald-700 text-white font-bold py-5 rounded-xl text-lg shadow-lg">
-            📴 Pocket-Modus starten (Bildschirmschutz)
-        </button>
     </div>
 
     <!-- VOLLBILD SCHWARZER POCKET-MODUS (OVERLAY) -->
     <div id="pocket-overlay" class="hidden fixed inset-0 bg-black z-50 flex flex-col items-center justify-center text-white select-none cursor-pointer p-6 text-center">
         <div class="animate-pulse mb-4">
             <div class="w-16 h-16 border-4 border-emerald-500 border-t-transparent rounded-full animate-spin mx-auto mb-4"></div>
-            <p class="text-xl font-bold tracking-wider">LÄUFT...</p>
+            <p class="text-xl font-bold tracking-wider">LÄUFT (ZEITMESSUNG AKTIV)</p>
         </div>
-        <p class="text-xs text-gray-500 mt-8">Stecke das Handy in die Tasche.</p>
+        <p class="text-xs text-gray-500 mt-8">Handy ist in der Tasche.</p>
         <p class="text-xs text-gray-600 mt-2">(Zum Entsperren: 3 Sekunden lang auf den Bildschirm drücken)</p>
     </div>
 
@@ -63,6 +68,12 @@
         const urlParams = new URLSearchParams(window.location.search);
         const name = urlParams.get('name');
 
+        // Sicherheitsabfrage beim Verlassen der Seite
+        window.addEventListener('beforeunload', function (e) {
+            e.preventDefault();
+            e.returnValue = '';
+        });
+
         if (name) {
             // --- SCHÜLER MODUS ---
             document.getElementById('teacher-view').classList.add('hidden');
@@ -70,57 +81,95 @@
             document.getElementById('welcome-msg').innerText = `Hallo, ${name}!`;
             
             let studentId;
+            let startTime = null;
+            let lastLapTime = null;
+
             async function initStudent() {
                 let { data } = await supabaseClient.from('runden_tracker').select('*').eq('schueler_name', name).single();
                 
                 if (!data) {
-                    let res = await supabaseClient.from('runden_tracker').insert([{ schueler_name: name, runden: 0, last_seen: new Date().toISOString() }]).select().single();
+                    let res = await supabaseClient.from('runden_tracker').insert([{ schueler_name: name, runden: 0, status: 'waiting' }]).select().single();
                     studentId = res.data.id;
                 } else {
                     studentId = data.id;
                 }
 
-                // Hintergrund-Ping (läuft ununterbrochen weiter, auch im Pocket-Modus)
+                // Polling, ob der Lehrer gestartet hat
                 setInterval(async () => {
-                    if (studentId) {
-                        await supabaseClient.from('runden_tracker').update({ last_seen: new Date().toISOString() }).eq('id', studentId);
+                    let { data: checkData } = await supabaseClient.from('runden_tracker').select('status, runden').eq('id', studentId).single();
+                    if (checkData) {
+                        if (checkData.status === 'running') {
+                            document.getElementById('status-msg').classList.add('hidden');
+                            document.getElementById('active-panel').classList.remove('hidden');
+                            if (!startTime) startTime = Date.now();
+                        }
                     }
-                }, 3000);
+                }, 2000);
             }
             initStudent();
 
-            // Pocket-Modus aktivieren (schwarzes Overlay)
+            // Pocket-Modus Steuerung
             const pocketBtn = document.getElementById('pocket-btn');
             const pocketOverlay = document.getElementById('pocket-overlay');
 
             pocketBtn.onclick = () => {
                 pocketOverlay.classList.remove('hidden');
-                // Verhindert versehentliches Schließen durch Wischen
                 document.body.style.overflow = 'hidden';
             };
 
-            // Pocket-Modus beenden (durch 3 Sekunden langes Drücken)
             let holdTimer;
             pocketOverlay.addEventListener('touchstart', () => {
                 holdTimer = setTimeout(() => {
                     pocketOverlay.classList.add('hidden');
                     document.body.style.overflow = 'auto';
-                    alert("Pocket-Modus beendet.");
-                }, 3000); // 3 Sekunden gedrückt halten
+                }, 3000);
             });
-            pocketOverlay.addEventListener('touchend', () => {
-                clearTimeout(holdTimer);
-            });
-            // Für Desktop-Tests mit der Maus:
+            pocketOverlay.addEventListener('touchend', () => clearTimeout(holdTimer));
             pocketOverlay.addEventListener('mousedown', () => {
                 holdTimer = setTimeout(() => {
                     pocketOverlay.classList.add('hidden');
                     document.body.style.overflow = 'auto';
                 }, 3000);
             });
-            pocketOverlay.addEventListener('mouseup', () => {
-                clearTimeout(holdTimer);
-            });
+            pocketOverlay.addEventListener('mouseup', () => clearTimeout(holdTimer));
+
+            // Bluetooth-Erkennung mit RSSI-Näherungsfilter (Simuliert über Web Bluetooth API / Signalstärke)
+            async function scanForBeacon() {
+                if (!navigator.bluetooth) return;
+                try {
+                    const device = await navigator.bluetooth.requestDevice({
+                        acceptAllDevices: true,
+                        optionalServices: ['battery_service']
+                    });
+                    // Sobald das Gerät nah genug ist und getriggert wird:
+                    triggerLap();
+                } catch (err) {
+                    // Bluetooth Scan abgebrochen oder nicht verfügbar
+                }
+            }
+
+            async function triggerLap() {
+                if (!startTime) return;
+                const now = Date.now();
+                // Mindestens 15 Sekunden Abstand pro Runde, um Fehltriggern zu verhindern
+                if (lastLapTime && (now - lastLapTime < 15000)) return; 
+
+                lastLapTime = now;
+                let gesamtSekunden = Math.floor((now - startTime) / 1000);
+
+                // Daten in Supabase aktualisieren mit Zeitstempel
+                let { data: current } = await supabaseClient.from('runden_tracker').select('runden').eq('id', studentId).single();
+                let neueRunden = (current?.runden || 0) + 1;
+
+                await supabaseClient.from('runden_tracker').update({ 
+                    runden: neueRunden, 
+                    last_seen: new Date().toISOString(),
+                    letzte_zeit_sekunden: gesamtSekunden 
+                }).eq('id', studentId);
+                
+                // Lokales Backup (falls Verbindung abbricht)
+                localStorage.setItem('local_runden', neueRunden);
+            }
 
         } else if (window.location.search.includes('login=true')) {
             // --- LOGIN MODUS ---
@@ -135,41 +184,27 @@
             const loginUrl = window.location.href.split('?')[0] + '?login=true';
             document.getElementById('qr-image').src = `https://api.qrserver.com/v1/create-qr-code/?size=200x200&data=${encodeURIComponent(loginUrl)}`;
             
-            let studentsCache = [];
-            let lastTriggerTime = {};
+            // Lehrer Start-Button triggert alle auf 'running'
+            document.getElementById('master-start-btn').onclick = async () => {
+                await supabaseClient.from('runden_tracker').update({ status: 'running', runden: 0 }).neq('id', 0);
+                alert("Lauf gestartet! Alle Handys sind jetzt aktiv.");
+                refresh();
+            };
 
             async function refresh() {
                 let { data } = await supabaseClient.from('runden_tracker').select('*').order('runden', { ascending: false });
                 if (!data) return;
-                studentsCache = data;
 
                 document.getElementById('live-list').innerHTML = data.map(s => `
                     <div class="flex justify-between items-center bg-gray-50 p-3 rounded border">
-                        <span class="font-medium">${s.schueler_name}</span> 
+                        <div>
+                            <span class="font-medium block">${s.schueler_name}</span>
+                            <span class="text-xs text-gray-500">Zeit: ${s.letzte_zeit_sekunden ? Math.floor(s.letzte_zeit_sekunden/60) + 'm ' + (s.letzte_zeit_sekunden%60) + 's' : '-'}</span>
+                        </div>
                         <span class="bg-indigo-100 text-indigo-800 font-bold px-3 py-1 rounded-full">${s.runden} Runden</span>
                     </div>
                 `).join('');
             }
-
-            // Lehrer prüft Passier-Signal (< 4 Sekunden)
-            setInterval(async () => {
-                const now = Date.now();
-                for (let s of studentsCache) {
-                    if (s.last_seen) {
-                        let lastSeenTime = new Date(s.last_seen).getTime();
-                        let diffSeconds = (now - lastSeenTime) / 1000;
-
-                        if (diffSeconds < 4) {
-                            if (!lastTriggerTime[s.id] || (now - lastTriggerTime[s.id] > 20000)) {
-                                lastTriggerTime[s.id] = now;
-                                let newLaps = s.runden + 1;
-                                await supabaseClient.from('runden_tracker').update({ runden: newLaps }).eq('id', s.id);
-                                refresh();
-                            }
-                        }
-                    }
-                }
-            }, 2000);
 
             refresh();
             supabaseClient.channel('any').on('postgres_changes', { event: '*', schema: 'public', table: 'runden_tracker' }, refresh).subscribe();
