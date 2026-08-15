@@ -3,138 +3,81 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Runden-Tracker Test</title>
-    <!-- Tailwind CSS für schnelles Design -->
+    <title>Runden-Tracker</title>
     <script src="https://cdn.tailwindcss.com"></script>
-    <!-- Supabase Client -->
     <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
-    <!-- QR Code Generator -->
-    <script src="https://cdn.jsdelivr.net/npm/qrcode@1.5.3/build/qrcode.min.js"></script>
 </head>
 <body class="bg-gray-100 min-h-screen flex flex-col items-center justify-center p-4">
 
-    <!-- ANSICHT 1: LEHRER (Standard ohne URL-Parameter) -->
+    <!-- LEHRER ANSICHT -->
     <div id="teacher-view" class="w-full max-w-md bg-white rounded-xl shadow-lg p-6 text-center">
         <h1 class="text-2xl font-bold mb-4 text-gray-800">Lehrer-Dashboard</h1>
+        <!-- QR-Code als unkaputtbares Bild -->
         <div id="qr-container" class="flex justify-center mb-4">
-            <canvas id="qrcode"></canvas>
+            <img id="qr-image" src="" alt="QR-Code zum Einloggen" class="w-48 h-48">
         </div>
-        <p class="text-sm text-gray-500 mb-6">Lernende scannen diesen QR-Code mit dem Handy.</p>
-        
+        <p class="text-sm text-gray-500 mb-6">Lernende scannen diesen Code.</p>
         <h2 class="text-lg font-semibold text-left mb-2">Live-Runden:</h2>
-        <div id="live-list" class="space-y-2 text-left">
-            <p class="text-gray-400 italic">Warte auf Teilnehmer...</p>
-        </div>
+        <div id="live-list" class="space-y-2 text-left"></div>
     </div>
 
-    <!-- ANSICHT 2: SCHÜLER (Wird geöffnet, wenn ?role=student&name=... in der URL steht) -->
+    <!-- SCHÜLER LOGIN -->
+    <div id="login-view" class="hidden w-full max-w-md bg-white rounded-xl shadow-lg p-6 text-center">
+        <h1 class="text-xl font-bold mb-6">Wie heißt du?</h1>
+        <input type="text" id="name-input" placeholder="Dein Name" class="w-full border p-3 rounded-lg mb-4 text-lg">
+        <button id="join-btn" class="w-full bg-blue-600 text-white font-bold py-4 rounded-lg">Anmelden</button>
+    </div>
+
+    <!-- SCHÜLER BUTTON -->
     <div id="student-view" class="hidden w-full max-w-md bg-white rounded-xl shadow-lg p-6 text-center">
-        <h1 id="welcome-msg" class="text-xl font-bold mb-6 text-gray-800"></h1>
-        <button id="lap-btn" class="w-full bg-emerald-500 hover:bg-emerald-600 active:scale-95 text-white font-bold py-12 rounded-2xl text-3xl shadow-xl transition transform">
-            + RUNDE ZÄHLEN
-        </button>
-        <p id="status-msg" class="text-sm text-green-600 mt-4 font-medium"></p>
+        <h1 id="welcome-msg" class="text-xl font-bold mb-6"></h1>
+        <button id="lap-btn" class="w-full bg-emerald-500 text-white font-bold py-16 rounded-2xl text-3xl shadow-xl">+ RUNDE</button>
     </div>
 
     <script>
-        // DEINE EINGETRAGENEN SUPABASE DATEN:
         const SUPABASE_URL = 'https://afusoaugsqjjivxjhgrj.supabase.co';
         const SUPABASE_ANON_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImFmdXNvYXVnc3Fqaml2eGpoZ3JqIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODY4MTg3NDIsImV4cCI6MjEwMjM5NDc0Mn0.EHgeUwGY-1XtmuexegWNoUn97u-RArInWzD7NVIQJHo';
-        
         const supabaseClient = supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
 
-        // URL auswerten
         const urlParams = new URLSearchParams(window.location.search);
-        const role = urlParams.get('role');
-        const studentName = urlParams.get('name');
+        const name = urlParams.get('name');
 
-        const teacherView = document.getElementById('teacher-view');
-        const studentView = document.getElementById('student-view');
-
-        if (role === 'student' && studentName) {
-            // --- SCHÜLER MODUS ---
-            teacherView.classList.add('hidden');
-            studentView.classList.remove('hidden');
-            document.getElementById('welcome-msg').innerText = `Hallo, ${studentName}!`;
-
-            let studentId = null;
-
-            async function registerOrGetStudent() {
-                let { data, error } = await supabaseClient
-                    .from('runden_tracker')
-                    .select('*')
-                    .eq('schueler_name', studentName)
-                    .single();
-
-                if (!data) {
-                    let insertRes = await supabaseClient
-                        .from('runden_tracker')
-                        .insert([{ schueler_name: studentName, runden: 0 }])
-                        .select()
-                        .single();
-                    studentId = insertRes.data.id;
-                } else {
-                    studentId = data.id;
-                }
-            }
-            registerOrGetStudent();
-
-            document.getElementById('lap-btn').addEventListener('click', async () => {
-                if (!studentId) return;
-                
-                let { data } = await supabaseClient.from('runden_tracker').select('runden').eq('id', studentId).single();
-                let newLaps = (data?.runden || 0) + 1;
-
-                let { error } = await supabaseClient
-                    .from('runden_tracker')
-                    .update({ runden: newLaps })
-                    .eq('id', studentId);
-
-                if (!error) {
-                    document.getElementById('status-msg').innerText = `Runde ${newLaps} erfolgreich übermittelt!`;
-                    setTimeout(() => document.getElementById('status-msg').innerText = '', 2000);
-                }
-            });
-
-        } else {
-            // --- LEHRER MODUS ---
-            studentView.classList.add('hidden');
-            teacherView.classList.remove('hidden');
-
-            const currentBaseUrl = window.location.href.split('?')[0];
+        if (name) {
+            // SCHÜLER MODUS
+            document.getElementById('teacher-view').classList.add('hidden');
+            document.getElementById('student-view').classList.remove('hidden');
+            document.getElementById('welcome-msg').innerText = `Hallo, ${name}!`;
             
-            QRCode.toCanvas(document.getElementById('qrcode'), currentBaseUrl, { width: 200 }, function (error) {
-                if (error) console.error(error);
+            let studentId;
+            supabaseClient.from('runden_tracker').select('*').eq('schueler_name', name).single().then(({data}) => {
+                studentId = data.id;
             });
 
-            async function fetchLeaderboard() {
-                let { data, error } = await supabaseClient
-                    .from('runden_tracker')
-                    .select('*')
-                    .order('runden', { ascending: false });
-
-                const listEl = document.getElementById('live-list');
-                if (data && data.length > 0) {
-                    listEl.innerHTML = data.map(s => `
-                        <div class="flex justify-between items-center bg-gray-50 p-3 rounded-lg border">
-                            <span class="font-medium text-gray-700">${s.schueler_name}</span>
-                            <span class="bg-indigo-100 text-indigo-800 font-bold px-3 py-1 rounded-full">${s.runden} Runden</span>
-                        </div>
-                    `).join('');
-                } else {
-                    listEl.innerHTML = `<p class="text-gray-400 italic">Noch keine Schüler angemeldet.</p>`;
-                }
+            document.getElementById('lap-btn').onclick = async () => {
+                let { data } = await supabaseClient.from('runden_tracker').select('runden').eq('id', studentId).single();
+                await supabaseClient.from('runden_tracker').update({ runden: data.runden + 1 }).eq('id', studentId);
+            };
+        } else if (window.location.search.includes('login=true')) {
+            // LOGIN MODUS
+            document.getElementById('teacher-view').classList.add('hidden');
+            document.getElementById('login-view').classList.remove('hidden');
+            document.getElementById('join-btn').onclick = () => {
+                const n = document.getElementById('name-input').value;
+                if(n) window.location.href = `?name=${encodeURIComponent(n)}`;
+            };
+        } else {
+            // LEHRER MODUS
+            const loginUrl = window.location.href.split('?')[0] + '?login=true';
+            document.getElementById('qr-image').src = `https://api.qrserver.com/v1/create-qr-code/?size=200x200&data=${encodeURIComponent(loginUrl)}`;
+            
+            async function refresh() {
+                let { data } = await supabaseClient.from('runden_tracker').select('*').order('runden', { ascending: false });
+                document.getElementById('live-list').innerHTML = data.map(s => 
+                    `<div class="flex justify-between bg-gray-50 p-3 rounded border">${s.schueler_name} <span class="font-bold">${s.runden} Runden</span></div>`
+                ).join('');
             }
-
-            fetchLeaderboard();
-
-            // Realtime Listener
-            supabaseClient
-                .channel('public:runden_tracker')
-                .on('postgres_changes', { event: '*', schema: 'public', table: 'runden_tracker' }, payload => {
-                    fetchLeaderboard();
-                })
-                .subscribe();
+            refresh();
+            supabaseClient.channel('any').on('postgres_changes', { event: '*', schema: 'public', table: 'runden_tracker' }, refresh).subscribe();
         }
     </script>
 </body>
