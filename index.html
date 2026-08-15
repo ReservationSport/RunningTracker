@@ -45,7 +45,7 @@
     <!-- SCHÜLER AKTIV -->
     <div id="student-view" class="hidden w-full max-w-md bg-white rounded-xl shadow-xl p-6 text-center">
         <h1 id="welcome-msg" class="text-2xl font-bold mb-2"></h1>
-        <p id="student-status-text" class="text-sm text-amber-600 font-semibold mb-2">Warte auf den Startschuss vom Lehrer...</p>
+        <p class="text-sm text-emerald-600 font-semibold mb-2">Du bist angemeldet!</p>
         <button id="pocket-btn" class="w-full bg-emerald-600 text-white font-bold py-5 rounded-xl mt-4">📴 Pocket-Modus starten</button>
     </div>
 
@@ -65,6 +65,7 @@
 
         window.lastTriggerTime = {};
         window.studentState = {};
+        window.raceStarted = false; // Lokaler Schalter für den Start
 
         if (name) {
             document.getElementById('teacher-view').classList.add('hidden');
@@ -85,15 +86,6 @@
                 setInterval(async () => {
                     await supabaseClient.from('runden_tracker').update({ last_seen: new Date().toISOString() }).eq('id', studentId);
                 }, 2000);
-
-                // Prüfen ob das Rennen bereits gestartet wurde
-                setInterval(async () => {
-                    let { data: config } = await supabaseClient.from('app_config').select('*').eq('key', 'race_started').single();
-                    if (config && config.value === 'true') {
-                        document.getElementById('student-status-text').innerText = "🟢 Rennen läuft! Du kannst Runden sammeln.";
-                        document.getElementById('student-status-text').className = "text-sm text-emerald-600 font-semibold mb-2";
-                    }
-                }, 1000);
             }
             initStudent();
 
@@ -120,32 +112,15 @@
             const startBtn = document.getElementById('start-tracking-btn');
             const statusText = document.getElementById('race-status');
 
-            async function checkRaceStatus() {
-                let { data } = await supabaseClient.from('app_config').select('*').eq('key', 'race_started').single();
-                if (data && data.value === 'true') {
-                    startBtn.innerText = "🛑 Rennen läuft (Neu starten?)";
-                    startBtn.className = "w-full bg-amber-600 hover:bg-amber-700 text-white font-bold py-3 rounded-lg mb-4 shadow transition";
-                    statusText.innerText = "Status: Rennen ist AKTIV";
-                    statusText.className = "text-sm font-semibold text-emerald-600 mb-4";
-                }
-            }
-            checkRaceStatus();
-
-            startBtn.onclick = async () => {
-                // Konfiguration in Supabase auf true setzen (Upsert)
-                await supabaseClient.from('app_config').upsert({ key: 'race_started', value: 'true' });
-                startBtn.innerText = "🛑 Rennen läuft (Neu starten?)";
+            startBtn.onclick = () => {
+                window.raceStarted = true;
+                startBtn.innerText = "🛑 Rennen läuft!";
                 startBtn.className = "w-full bg-amber-600 hover:bg-amber-700 text-white font-bold py-3 rounded-lg mb-4 shadow transition";
-                statusText.innerText = "Status: Rennen ist AKTIV";
+                statusText.innerText = "Status: Rennen ist AKTIV (Runden werden gezählt)";
                 statusText.className = "text-sm font-semibold text-emerald-600 mb-4";
-                alert("Startschuss gegeben! Runden werden ab sofort gezählt.");
             };
 
             async function refresh() {
-                // Prüfen ob Rennen gestartet ist
-                let { data: config } = await supabaseClient.from('app_config').select('*').eq('key', 'race_started').single();
-                let raceStarted = config && config.value === 'true';
-
                 let { data } = await supabaseClient.from('runden_tracker').select('*').order('runden', { ascending: false });
                 if (!data) return;
                 
@@ -154,8 +129,8 @@
                         <span>${s.schueler_name}</span> <b>${s.runden} Runden</b>
                     </div>`).join('');
                 
-                // Runden nur zählen, wenn das Rennen aktiv ist
-                if (!raceStarted) return;
+                // Wenn der Lehrer noch nicht auf Start gedrückt hat, keine Runden zählen!
+                if (!window.raceStarted) return;
 
                 const now = Date.now();
                 data.forEach(async (s) => {
@@ -195,14 +170,10 @@
             document.getElementById('detail-modal').classList.remove('hidden');
 
             let { data } = await supabaseClient
-                .from('rurnd_zeiten') // Sicherheitsfallback falls Tabelle anders heißt
+                .from('runden_zeiten')
                 .select('*')
                 .eq('student_id', studentId)
                 .order('runden_nummer', { ascending: true });
-
-            // Korrektur falls der Tabellenname runden_zeiten ist
-            let res = await supabaseClient.from('runden_zeiten').select('*').eq('student_id', studentId).order('runden_nummer', { ascending: true });
-            data = res.data;
 
             if (!data || data.length === 0) {
                 document.getElementById('modal-times-list').innerHTML = '<p class="text-gray-500">Noch keine Runden aufgezeichnet.</p>';
