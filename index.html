@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Runden-Tracker mit Rundenzeiten</title>
+    <title>Runden-Tracker Pro</title>
     <script src="https://cdn.tailwindcss.com"></script>
     <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
 </head>
@@ -55,6 +55,7 @@
         const name = urlParams.get('name');
 
         window.lastTriggerTime = {};
+        window.studentState = {}; // 'near' oder 'away' zur Verhinderung des Dauereinzählens
 
         if (name) {
             document.getElementById('teacher-view').classList.add('hidden');
@@ -100,7 +101,7 @@
                 if (!data) return;
                 
                 document.getElementById('live-list').innerHTML = data.map(s => `
-                    <div onclick="openStudentDetails(${s.id}, '${s.schueler_name}')" class="flex justify-between bg-gray-50 p-3 rounded border cursor-pointer hover:bg-blue-50 transition">
+                    <div onclick="openStudentDetails('${s.id}', '${s.schueler_name}')" class="flex justify-between bg-gray-50 p-3 rounded border cursor-pointer hover:bg-blue-50 transition">
                         <span>${s.schueler_name}</span> <b>${s.runden} Runden</b>
                     </div>`).join('');
                 
@@ -109,11 +110,21 @@
                     if (!s.last_seen) return;
                     let lastSeenTime = new Date(s.last_seen).getTime();
                     let diffSeconds = (now - lastSeenTime) / 1000;
-                    let isStrongSignal = diffSeconds < 2.5;
+                    
+                    // Ist das Handy gerade aktiv nah am Tablet? (< 3 Sekunden)
+                    let isPresent = diffSeconds < 3;
 
-                    if (isStrongSignal) {
+                    if (!window.studentState[s.id]) {
+                        window.studentState[s.id] = 'away';
+                    }
+
+                    // ZÄHL-LOGIK: Nur wenn er JETZT da ist, aber VORHER weg war (Zustandswechsel)
+                    if (isPresent && window.studentState[s.id] === 'away') {
+                        // 10 Sekunden Sperre, damit man sich nicht aus Versehen doppelt anmeldet
                         if (!window.lastTriggerTime[s.id] || (now - window.lastTriggerTime[s.id] > 10000)) {
                             window.lastTriggerTime[s.id] = now;
+                            window.studentState[s.id] = 'present'; // Auf anwesend setzen
+                            
                             let newRounds = s.runden + 1;
                             
                             // Haupttabelle updaten
@@ -122,20 +133,23 @@
                             // Rundenzeit in die Historie eintragen
                             await supabaseClient.from('runden_zeiten').insert([{ student_id: s.id, runden_nummer: newRounds }]);
                         }
+                    } 
+                    // Wenn das Signal länger als 5 Sekunden ausbleibt, setzen wir den Status zurück auf "away"
+                    else if (!isPresent && diffSeconds > 5) {
+                        window.studentState[s.id] = 'away';
                     }
                 });
             }
-            setInterval(refresh, 1000);
+            setInterval(refresh, 1500);
             supabaseClient.channel('any').on('postgres_changes', { event: '*', schema: 'public', table: 'runden_tracker' }, refresh).subscribe();
         }
 
-        // Modal öffnen und Rundenzeiten laden
         async function openStudentDetails(studentId, studentName) {
             document.getElementById('modal-title').innerText = `Rundenzeiten für ${studentName}`;
             document.getElementById('modal-times-list').innerHTML = 'Lade Zeiten...';
             document.getElementById('detail-modal').classList.remove('hidden');
 
-            let { data, error } = await supabaseClient
+            let { data } = await supabaseClient
                 .from('runden_zeiten')
                 .select('*')
                 .eq('student_id', studentId)
