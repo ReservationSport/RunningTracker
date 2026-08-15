@@ -13,7 +13,14 @@
     <div id="teacher-view" class="w-full max-w-md bg-white rounded-xl shadow-lg p-6 text-center">
         <h1 class="text-2xl font-bold mb-2 text-gray-800">Lehrer-Dashboard</h1>
         <p class="text-xs text-gray-500 mb-4">(Klicke auf einen Schüler für die Rundenzeiten)</p>
+        
         <div id="qr-container" class="flex justify-center mb-4"><img id="qr-image" src="" alt="QR" class="w-48 h-48"></div>
+        
+        <!-- Start-Button für den Lehrer / Administrator -->
+        <button id="start-tracking-btn" class="w-full bg-emerald-600 hover:bg-emerald-700 text-white font-bold py-3 rounded-lg mb-6 shadow">
+            🚀 Tracking starten / Reset
+        </button>
+
         <h2 class="text-lg font-semibold text-left mb-2">Live-Runden:</h2>
         <div id="live-list" class="space-y-2 text-left"></div>
     </div>
@@ -55,7 +62,7 @@
         const name = urlParams.get('name');
 
         window.lastTriggerTime = {};
-        window.studentState = {}; // 'near' oder 'away' zur Verhinderung des Dauereinzählens
+        window.studentState = {};
 
         if (name) {
             document.getElementById('teacher-view').classList.add('hidden');
@@ -96,6 +103,11 @@
             const loginUrl = window.location.href.split('?')[0] + '?login=true';
             document.getElementById('qr-image').src = `https://api.qrserver.com/v1/create-qr-code/?size=200x200&data=${encodeURIComponent(loginUrl)}`;
             
+            // Start-Button Logik (z.B. visuelles Feedback oder optionaler Start-Trigger)
+            document.getElementById('start-tracking-btn').onclick = () => {
+                alert("Tracking ist aktiv! Läufer können sich einloggen und Runden sammeln.");
+            };
+
             async function refresh() {
                 let { data } = await supabaseClient.from('runden_tracker').select('*').order('runden', { ascending: false });
                 if (!data) return;
@@ -111,30 +123,23 @@
                     let lastSeenTime = new Date(s.last_seen).getTime();
                     let diffSeconds = (now - lastSeenTime) / 1000;
                     
-                    // Ist das Handy gerade aktiv nah am Tablet? (< 3 Sekunden)
                     let isPresent = diffSeconds < 3;
 
                     if (!window.studentState[s.id]) {
                         window.studentState[s.id] = 'away';
                     }
 
-                    // ZÄHL-LOGIK: Nur wenn er JETZT da ist, aber VORHER weg war (Zustandswechsel)
                     if (isPresent && window.studentState[s.id] === 'away') {
-                        // 10 Sekunden Sperre, damit man sich nicht aus Versehen doppelt anmeldet
                         if (!window.lastTriggerTime[s.id] || (now - window.lastTriggerTime[s.id] > 10000)) {
                             window.lastTriggerTime[s.id] = now;
-                            window.studentState[s.id] = 'present'; // Auf anwesend setzen
+                            window.studentState[s.id] = 'present';
                             
                             let newRounds = s.runden + 1;
                             
-                            // Haupttabelle updaten
                             await supabaseClient.from('runden_tracker').update({ runden: newRounds }).eq('id', s.id);
-                            
-                            // Rundenzeit in die Historie eintragen
                             await supabaseClient.from('runden_zeiten').insert([{ student_id: s.id, runden_nummer: newRounds }]);
                         }
                     } 
-                    // Wenn das Signal länger als 5 Sekunden ausbleibt, setzen wir den Status zurück auf "away"
                     else if (!isPresent && diffSeconds > 5) {
                         window.studentState[s.id] = 'away';
                     }
@@ -160,10 +165,27 @@
                 return;
             }
 
-            document.getElementById('modal-times-list').innerHTML = data.map(r => {
-                let timeString = new Date(r.created_at).toLocaleTimeString('de-DE');
-                return `<div class="flex justify-between border-b py-1"><span>Runde ${r.runden_nummer}</span> <b>${timeString} Uhr</b></div>`;
-            }).join('');
+            // Rundenzeiten als Differenz (Minuten:Sekunden) berechnen
+            let html = '';
+            let previousTime = null;
+
+            data.forEach((r, index) => {
+                let currentTime = new Date(r.created_at).getTime();
+                let durationText = "Start";
+
+                if (index > 0 && previousTime) {
+                    let diffMs = currentTime - previousTime;
+                    let totalSeconds = Math.floor(diffMs / 1000);
+                    let minutes = Math.floor(totalSeconds / 60);
+                    let seconds = totalSeconds % 60;
+                    durationText = `${minutes} Min. ${seconds < 10 ? '0' : ''}${seconds} Sek.`;
+                }
+
+                previousTime = currentTime;
+                html += `<div class="flex justify-between border-b py-1"><span>Runde ${r.runden_nummer}</span> <b>${durationText}</b></div>`;
+            });
+
+            document.getElementById('modal-times-list').innerHTML = html;
         }
 
         function closeModal() {
