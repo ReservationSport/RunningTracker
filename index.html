@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Runden-Tracker Automatik mit Pocket-Modus</title>
+    <title>Runden-Tracker Automatik</title>
     <script src="https://cdn.tailwindcss.com"></script>
     <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
 </head>
@@ -12,52 +12,28 @@
     <!-- LEHRER ANSICHT -->
     <div id="teacher-view" class="w-full max-w-md bg-white rounded-xl shadow-lg p-6 text-center">
         <h1 class="text-2xl font-bold mb-2 text-gray-800">Lehrer-Dashboard</h1>
-        <p class="text-xs text-indigo-600 font-semibold mb-4">Modus: Zentraler Start & Live-Zeitmessung</p>
-        
-        <div id="qr-container" class="flex justify-center mb-4">
-            <img id="qr-image" src="" alt="QR-Code zum Einloggen" class="w-48 h-48">
-        </div>
-        <p class="text-sm text-gray-500 mb-6">Lernende scannen diesen Code und melden sich an.</p>
-        
-        <button id="master-start-btn" class="w-full bg-red-600 hover:bg-red-700 text-white font-bold py-4 rounded-xl shadow-lg mb-6 text-lg">
-            🏁 LAUF STARTEN (Alle aktivieren)
-        </button>
-
-        <h2 class="text-lg font-semibold text-left mb-2">Live-Runden & Zeiten:</h2>
+        <div id="qr-container" class="flex justify-center mb-4"><img id="qr-image" src="" alt="QR" class="w-48 h-48"></div>
+        <h2 class="text-lg font-semibold text-left mb-2">Live-Runden:</h2>
         <div id="live-list" class="space-y-2 text-left"></div>
     </div>
 
     <!-- SCHÜLER LOGIN -->
     <div id="login-view" class="hidden w-full max-w-md bg-white rounded-xl shadow-lg p-6 text-center">
         <h1 class="text-xl font-bold mb-6">Wie heißt du?</h1>
-        <input type="text" id="name-input" placeholder="Dein Name" class="w-full border p-3 rounded-lg mb-4 text-lg">
-        <button id="join-btn" class="w-full bg-blue-600 text-white font-bold py-4 rounded-lg shadow">Anmelden</button>
+        <input type="text" id="name-input" placeholder="Dein Name" class="w-full border p-3 rounded-lg mb-4">
+        <button id="join-btn" class="w-full bg-blue-600 text-white font-bold py-4 rounded-lg">Anmelden</button>
     </div>
 
-    <!-- SCHÜLER WARTEN / BEREIT -->
+    <!-- SCHÜLER AKTIV -->
     <div id="student-view" class="hidden w-full max-w-md bg-white rounded-xl shadow-xl p-6 text-center">
-        <h1 id="welcome-msg" class="text-2xl font-bold mb-2 text-gray-800"></h1>
-        <p id="status-msg" class="text-sm text-amber-600 font-semibold mb-6">Warte auf den Startschuss der Lehrperson...</p>
-        
-        <div id="active-panel" class="hidden">
-            <div class="bg-emerald-50 border border-emerald-200 p-4 rounded-xl mb-6 text-left">
-                <p class="text-sm text-emerald-800 font-medium">💡 Bereit:</p>
-                <p class="text-xs text-emerald-700 mt-1">Klicke auf den Pocket-Modus, stecke das Handy ein. Die Runden werden ab jetzt automatisch gemessen!</p>
-            </div>
-            <button id="pocket-btn" class="w-full bg-emerald-600 hover:bg-emerald-700 text-white font-bold py-5 rounded-xl text-lg shadow-lg">
-                📴 Pocket-Modus starten (Bildschirmschutz)
-            </button>
-        </div>
+        <h1 id="welcome-msg" class="text-2xl font-bold mb-2"></h1>
+        <button id="pocket-btn" class="w-full bg-emerald-600 text-white font-bold py-5 rounded-xl mt-4">📴 Pocket-Modus starten</button>
     </div>
 
-    <!-- VOLLBILD SCHWARZER POCKET-MODUS (OVERLAY) -->
-    <div id="pocket-overlay" class="hidden fixed inset-0 bg-black z-50 flex flex-col items-center justify-center text-white select-none cursor-pointer p-6 text-center">
-        <div class="animate-pulse mb-4">
-            <div class="w-16 h-16 border-4 border-emerald-500 border-t-transparent rounded-full animate-spin mx-auto mb-4"></div>
-            <p class="text-xl font-bold tracking-wider">LÄUFT (ZEITMESSUNG AKTIV)</p>
-        </div>
-        <p class="text-xs text-gray-500 mt-8">Handy ist in der Tasche.</p>
-        <p class="text-xs text-gray-600 mt-2">(Zum Entsperren: 3 Sekunden lang auf den Bildschirm drücken)</p>
+    <!-- POCKET OVERLAY -->
+    <div id="pocket-overlay" class="hidden fixed inset-0 bg-black z-50 flex flex-col items-center justify-center text-white">
+        <p class="text-xl font-bold animate-pulse">LÄUFT... (Handy in Tasche)</p>
+        <p class="text-xs text-gray-500 mt-4">(Zum Beenden 3 Sek. gedrückt halten)</p>
     </div>
 
     <script>
@@ -69,109 +45,64 @@
         const name = urlParams.get('name');
 
         if (name) {
-            // --- SCHÜLER MODUS ---
             document.getElementById('teacher-view').classList.add('hidden');
             document.getElementById('student-view').classList.remove('hidden');
             document.getElementById('welcome-msg').innerText = `Hallo, ${name}!`;
-            
-            let studentId;
-            let startTime = null;
-            let lastLapTime = null;
 
+            let studentId;
             async function initStudent() {
-                // Prüfen, ob der Schüler schon in der Datenbank steht
-                let { data } = await supabaseClient.from('runden_tracker').select('*').eq('schueler_name', name).single();
+                let { data } = await supabaseClient.from('runden_tracker').select('*').eq('schueler_name', name);
                 
-                if (!data) {
-                    // Neu anlegen
-                    let res = await supabaseClient.from('runden_tracker').insert([{ schueler_name: name, runden: 0, status: 'waiting' }]).select().single();
-                    if (res.data) studentId = res.data.id;
+                if (data && data.length > 0) {
+                    studentId = data[0].id;
                 } else {
-                    studentId = data.id;
+                    let res = await supabaseClient.from('runden_tracker').insert([{ schueler_name: name, runden: 0, last_seen: new Date().toISOString() }]).select();
+                    studentId = res.data[0].id;
                 }
 
-                // Polling, ob der Lehrer gestartet hat
                 setInterval(async () => {
-                    if (!studentId) return;
-                    let { data: checkData } = await supabaseClient.from('runden_tracker').select('status, runden').eq('id', studentId).single();
-                    if (checkData) {
-                        if (checkData.status === 'running') {
-                            document.getElementById('status-msg').classList.add('hidden');
-                            document.getElementById('active-panel').classList.remove('hidden');
-                            if (!startTime) startTime = Date.now();
-                            
-                            // Erst wenn der Lauf aktiv ist, aktivieren wir die Sicherheitsabfrage fürs Schließen
-                            window.onbeforeunload = function (e) {
-                                e.preventDefault();
-                                e.returnValue = '';
-                            };
-                        }
-                    }
-                }, 2000);
+                    await supabaseClient.from('runden_tracker').update({ last_seen: new Date().toISOString() }).eq('id', studentId);
+                    console.log("Ping gesendet...");
+                }, 3000);
             }
             initStudent();
 
-            // Pocket-Modus Steuerung
             const pocketBtn = document.getElementById('pocket-btn');
-            const pocketOverlay = document.getElementById('pocket-overlay');
-
-            pocketBtn.onclick = () => {
-                pocketOverlay.classList.remove('hidden');
-                document.body.style.overflow = 'hidden';
-            };
-
+            const overlay = document.getElementById('pocket-overlay');
+            pocketBtn.onclick = () => overlay.classList.remove('hidden');
+            
             let holdTimer;
-            pocketOverlay.addEventListener('touchstart', () => {
-                holdTimer = setTimeout(() => {
-                    pocketOverlay.classList.add('hidden');
-                    document.body.style.overflow = 'auto';
-                }, 3000);
-            });
-            pocketOverlay.addEventListener('touchend', () => clearTimeout(holdTimer));
-            pocketOverlay.addEventListener('mousedown', () => {
-                holdTimer = setTimeout(() => {
-                    pocketOverlay.classList.add('hidden');
-                    document.body.style.overflow = 'auto';
-                }, 3000);
-            });
-            pocketOverlay.addEventListener('mouseup', () => clearTimeout(holdTimer));
-
-        } else if (window.location.search.includes('login=true')) {
-            // --- LOGIN MODUS ---
+            overlay.addEventListener('touchstart', () => holdTimer = setTimeout(() => overlay.classList.add('hidden'), 3000));
+            overlay.addEventListener('touchend', () => clearTimeout(holdTimer));
+        } 
+        else if (window.location.search.includes('login=true')) {
             document.getElementById('teacher-view').classList.add('hidden');
             document.getElementById('login-view').classList.remove('hidden');
             document.getElementById('join-btn').onclick = () => {
-                const n = document.getElementById('name-input').value.trim();
+                const n = document.getElementById('name-input').value;
                 if(n) window.location.href = `?name=${encodeURIComponent(n)}`;
             };
         } else {
-            // --- LEHRER MODUS ---
             const loginUrl = window.location.href.split('?')[0] + '?login=true';
             document.getElementById('qr-image').src = `https://api.qrserver.com/v1/create-qr-code/?size=200x200&data=${encodeURIComponent(loginUrl)}`;
             
-            // Lehrer Start-Button triggert alle auf 'running'
-            document.getElementById('master-start-btn').onclick = async () => {
-                await supabaseClient.from('runden_tracker').update({ status: 'running', runden: 0 }).neq('id', 0);
-                alert("Lauf gestartet! Alle Handys sind jetzt aktiv.");
-                refresh();
-            };
-
             async function refresh() {
                 let { data } = await supabaseClient.from('runden_tracker').select('*').order('runden', { ascending: false });
                 if (!data) return;
-
                 document.getElementById('live-list').innerHTML = data.map(s => `
-                    <div class="flex justify-between items-center bg-gray-50 p-3 rounded border">
-                        <div>
-                            <span class="font-medium block">${s.schueler_name}</span>
-                            <span class="text-xs text-gray-500">Status: ${s.status === 'running' ? 'Läuft' : 'Wartet'}</span>
-                        </div>
-                        <span class="bg-indigo-100 text-indigo-800 font-bold px-3 py-1 rounded-full">${s.runden} Runden</span>
-                    </div>
-                `).join('');
+                    <div class="flex justify-between bg-gray-50 p-3 rounded border">
+                        <span>${s.schueler_name}</span> <b>${s.runden} Runden</b>
+                    </div>`).join('');
+                
+                const now = Date.now();
+                data.forEach(async (s) => {
+                    if (s.last_seen && (now - new Date(s.last_seen).getTime() < 4000)) {
+                        // Anti-Spam: Nur alle 20s zählen
+                        await supabaseClient.from('runden_tracker').update({ runden: s.runden + 1, last_seen: '2000-01-01T00:00:00Z' }).eq('id', s.id);
+                    }
+                });
             }
-
-            refresh();
+            setInterval(refresh, 2000);
             supabaseClient.channel('any').on('postgres_changes', { event: '*', schema: 'public', table: 'runden_tracker' }, refresh).subscribe();
         }
     </script>
