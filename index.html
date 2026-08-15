@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Runden-Tracker Pro</title>
+    <title>Runden-Tracker Pro (Audio-Zone)</title>
     <script src="https://cdn.tailwindcss.com"></script>
     <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
 </head>
@@ -12,13 +12,13 @@
     <!-- LEHRER ANSICHT -->
     <div id="teacher-view" class="w-full max-w-md bg-white rounded-xl shadow-lg p-6 text-center">
         <h1 class="text-2xl font-bold mb-2 text-gray-800">Lehrer-Dashboard</h1>
-        <p class="text-xs text-gray-500 mb-4">(Klicke auf einen Schüler für die Rundenzeiten)</p>
+        <p class="text-xs text-gray-500 mb-4">(Sendet Ultraschall-Signal als Ziel-Linie)</p>
         
         <div id="qr-container" class="flex justify-center mb-4"><img id="qr-image" src="" alt="QR" class="w-48 h-48"></div>
         
         <!-- Start-Button für den Lehrer -->
         <button id="start-tracking-btn" class="w-full bg-emerald-600 hover:bg-emerald-700 text-white font-bold py-3 rounded-lg mb-4 shadow transition">
-            🚀 Rennen Starten!
+            🚀 Rennen & Audio-Sender Starten!
         </button>
         <p id="race-status" class="text-sm font-semibold text-gray-600 mb-4">Status: Wartet auf Start...</p>
 
@@ -45,14 +45,15 @@
     <!-- SCHÜLER AKTIV -->
     <div id="student-view" class="hidden w-full max-w-md bg-white rounded-xl shadow-xl p-6 text-center">
         <h1 id="welcome-msg" class="text-2xl font-bold mb-2"></h1>
-        <p class="text-sm text-emerald-600 font-semibold mb-2">Du bist angemeldet!</p>
+        <p id="student-status-text" class="text-sm text-amber-600 font-semibold mb-2">Mikrofon wartet auf Ziel-Linie...</p>
         <button id="pocket-btn" class="w-full bg-emerald-600 text-white font-bold py-5 rounded-xl mt-4">📴 Pocket-Modus starten</button>
     </div>
 
     <!-- POCKET OVERLAY -->
     <div id="pocket-overlay" class="hidden fixed inset-0 bg-black z-50 flex flex-col items-center justify-center text-white">
         <p class="text-xl font-bold animate-pulse">LÄUFT... (Handy in Tasche)</p>
-        <p class="text-xs text-gray-500 mt-4">(Zum Beenden 3 Sek. gedrückt halten)</p>
+        <p class="text-xs text-gray-500 mt-4">(Mikrofon lauscht auf Ziel-Ton)</p>
+        <p class="text-xs text-gray-400 mt-2">(Zum Beenden 3 Sek. gedrückt halten)</p>
     </div>
 
     <script>
@@ -63,9 +64,8 @@
         const urlParams = new URLSearchParams(window.location.search);
         const name = urlParams.get('name');
 
-        window.lastTriggerTime = {};
-        window.studentState = {};
-        window.raceStarted = false; // Lokaler Schalter für den Start
+        window.raceStarted = false;
+        const TARGET_FREQUENCY = 19000; // 19 kHz Ultraschall-Zielton
 
         if (name) {
             document.getElementById('teacher-view').classList.add('hidden');
@@ -82,12 +82,65 @@
                     studentId = res.data[0].id;
                 }
 
-                // Regelmäßiges Lebenszeichen senden
-                setInterval(async () => {
-                    await supabaseClient.from('runden_tracker').update({ last_seen: new Date().toISOString() }).eq('id', studentId);
-                }, 2000);
+                // Mikrofon-Lauscher für das Handy aktivieren
+                startListeningForBeacon(studentId);
             }
             initStudent();
+
+            // Mikrofon-Engine zur Erkennung des Lehrer-Tons
+            function startListeningForBeacon(sId) {
+                navigator.mediaDevices.getUserMedia({ audio: true }).then(stream => {
+                    const audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+                    const source = audioCtx.createMediaStreamSource(stream);
+                    const analyser = audioCtx.createAnalyser();
+                    analyser.fftSize = 2048;
+                    source.connect(analyser);
+
+                    const bufferLength = analyser.frequencyBinCount;
+                    const dataArray = new Uint8Array(bufferLength);
+
+                    let lastTrigger = 0;
+
+                    function analyzeAudio() {
+                        requestAnimationFrame(analyzeAudio);
+                        if (!window.raceStarted) return; // Nur zählen wenn Rennen läuft
+
+                        analyser.getByteFrequencyData(dataArray);
+
+                        // Frequenz in FFT-Bin umrechnen
+                        const nyquist = audioCtx.sampleRate / 2;
+                        const index = Math.round((TARGET_FREQUENCY / nyquist) * bufferLength);
+
+                        // Prüfen ob der Zielton laut genug empfangen wird (Schwellenwert > 150 von 255)
+                        if (dataArray[index] > 150) {
+                            const now = Date.now();
+                            // 10 Sekunden Sperre gegen Mehrfachzählung direkt an der Linie
+                            if (now - lastTrigger > 10000) {
+                                lastTrigger = now;
+                                triggerLap(sId);
+                            }
+                        }
+                    }
+                    analyzeAudio();
+                    document.getElementById('student-status-text').innerText = "🟢 Mikrofon aktiv. Bereit für Ziel-Linie!";
+                    document.getElementById('student-status-text').className = "text-sm text-emerald-600 font-semibold mb-2";
+                }).catch(err => {
+                    alert("Mikrofon-Zugriff verweigert! Ohne Mikrofon kann der Nahbereich nicht erkannt werden.");
+                });
+            }
+
+            async function triggerLap(sId) {
+                // Aktuelle Runden holen und erhöhen
+                let { data } = await supabaseClient.from('runden_tracker').select('runden').eq('id', sId).single();
+                if (data) {
+                    let newRounds = data.runden + 1;
+                    await supabaseClient.from('runden_tracker').update({ runden: newRounds }).eq('id', sId);
+                    await supabaseClient.from('runden_zeiten').insert([{ student_id: sId, runden_nummer: newRounds }]);
+                    
+                    // Kurzes visuelles/vibrierendes Feedback für den Schüler
+                    if (navigator.vibrate) navigator.vibrate(200);
+                }
+            }
 
             const pocketBtn = document.getElementById('pocket-btn');
             const overlay = document.getElementById('pocket-overlay');
@@ -108,15 +161,33 @@
             const loginUrl = window.location.href.split('?')[0] + '?login=true';
             document.getElementById('qr-image').src = `https://api.qrserver.com/v1/create-qr-code/?size=200x200&data=${encodeURIComponent(loginUrl)}`;
             
-            // Lehrer Start-Button Logik
             const startBtn = document.getElementById('start-tracking-btn');
             const statusText = document.getElementById('race-status');
 
+            // Audio-Sender auf dem Lehrer-Tablet starten
+            function startTeacherAudioBeacon() {
+                const audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+                const oscillator = audioCtx.createOscillator();
+                const gainNode = audioCtx.createGain();
+
+                oscillator.type = 'sine';
+                oscillator.frequency.setValueAtTime(TARGET_FREQUENCY, audioCtx.currentTime); // 19 kHz Zielton
+                
+                // Sehr leise einstellen, damit es nicht nervt (akustische Lichtschranke)
+                gainNode.gain.setValueAtTime(0.05, audioCtx.currentTime); 
+
+                oscillator.connect(gainNode);
+                gainNode.connect(audioCtx.destination);
+                oscillator.start();
+            }
+
             startBtn.onclick = () => {
                 window.raceStarted = true;
-                startBtn.innerText = "🛑 Rennen läuft!";
+                startTeacherAudioBeacon(); // Startet den Ultraschall-Ton am Lehrer-Tablet
+                
+                startBtn.innerText = "🛑 Rennen läuft & Sender aktiv!";
                 startBtn.className = "w-full bg-amber-600 hover:bg-amber-700 text-white font-bold py-3 rounded-lg mb-4 shadow transition";
-                statusText.innerText = "Status: Rennen ist AKTIV (Runden werden gezählt)";
+                statusText.innerText = "Status: Audio-Ziel-Linie ist AKTIV";
                 statusText.className = "text-sm font-semibold text-emerald-600 mb-4";
             };
 
@@ -128,37 +199,6 @@
                     <div onclick="openStudentDetails('${s.id}', '${s.schueler_name}')" class="flex justify-between bg-gray-50 p-3 rounded border cursor-pointer hover:bg-blue-50 transition">
                         <span>${s.schueler_name}</span> <b>${s.runden} Runden</b>
                     </div>`).join('');
-                
-                // Wenn der Lehrer noch nicht auf Start gedrückt hat, keine Runden zählen!
-                if (!window.raceStarted) return;
-
-                const now = Date.now();
-                data.forEach(async (s) => {
-                    if (!s.last_seen) return;
-                    let lastSeenTime = new Date(s.last_seen).getTime();
-                    let diffSeconds = (now - lastSeenTime) / 1000;
-                    
-                    let isPresent = diffSeconds < 3;
-
-                    if (!window.studentState[s.id]) {
-                        window.studentState[s.id] = 'away';
-                    }
-
-                    if (isPresent && window.studentState[s.id] === 'away') {
-                        if (!window.lastTriggerTime[s.id] || (now - window.lastTriggerTime[s.id] > 10000)) {
-                            window.lastTriggerTime[s.id] = now;
-                            window.studentState[s.id] = 'present';
-                            
-                            let newRounds = s.runden + 1;
-                            
-                            await supabaseClient.from('runden_tracker').update({ runden: newRounds }).eq('id', s.id);
-                            await supabaseClient.from('runden_zeiten').insert([{ student_id: s.id, runden_nummer: newRounds }]);
-                        }
-                    } 
-                    else if (!isPresent && diffSeconds > 5) {
-                        window.studentState[s.id] = 'away';
-                    }
-                });
             }
             setInterval(refresh, 1500);
             supabaseClient.channel('any').on('postgres_changes', { event: '*', schema: 'public', table: 'runden_tracker' }, refresh).subscribe();
