@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Runden-Tracker</title>
+    <title>Runden-Tracker Automatik</title>
     <script src="https://cdn.tailwindcss.com"></script>
     <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
 </head>
@@ -11,13 +11,15 @@
 
     <!-- LEHRER ANSICHT -->
     <div id="teacher-view" class="w-full max-w-md bg-white rounded-xl shadow-lg p-6 text-center">
-        <h1 class="text-2xl font-bold mb-4 text-gray-800">Lehrer-Dashboard</h1>
-        <!-- QR-Code als unkaputtbares Bild -->
+        <h1 class="text-2xl font-bold mb-2 text-gray-800">Lehrer-Dashboard</h1>
+        <p class="text-xs text-indigo-600 font-semibold mb-4">Modus: Automatische Passier-Erkennung</p>
+        
         <div id="qr-container" class="flex justify-center mb-4">
             <img id="qr-image" src="" alt="QR-Code zum Einloggen" class="w-48 h-48">
         </div>
-        <p class="text-sm text-gray-500 mb-6">Lernende scannen diesen Code.</p>
-        <h2 class="text-lg font-semibold text-left mb-2">Live-Runden:</h2>
+        <p class="text-sm text-gray-500 mb-6">Lernende scannen diesen Code und stecken das Handy ein.</p>
+        
+        <h2 class="text-lg font-semibold text-left mb-2">Live-Runden (Automatik):</h2>
         <div id="live-list" class="space-y-2 text-left"></div>
     </div>
 
@@ -25,13 +27,17 @@
     <div id="login-view" class="hidden w-full max-w-md bg-white rounded-xl shadow-lg p-6 text-center">
         <h1 class="text-xl font-bold mb-6">Wie heißt du?</h1>
         <input type="text" id="name-input" placeholder="Dein Name" class="w-full border p-3 rounded-lg mb-4 text-lg">
-        <button id="join-btn" class="w-full bg-blue-600 text-white font-bold py-4 rounded-lg">Anmelden</button>
+        <button id="join-btn" class="w-full bg-blue-600 text-white font-bold py-4 rounded-lg shadow">Anmelden & Bereit machen</button>
     </div>
 
-    <!-- SCHÜLER BUTTON -->
-    <div id="student-view" class="hidden w-full max-w-md bg-white rounded-xl shadow-lg p-6 text-center">
-        <h1 id="welcome-msg" class="text-xl font-bold mb-6"></h1>
-        <button id="lap-btn" class="w-full bg-emerald-500 text-white font-bold py-16 rounded-2xl text-3xl shadow-xl">+ RUNDE</button>
+    <!-- SCHÜLER AKTIV (AUTOMATIK) -->
+    <div id="student-view" class="hidden w-full max-w-md bg-emerald-600 text-white rounded-xl shadow-2xl p-8 text-center">
+        <h1 id="welcome-msg" class="text-2xl font-bold mb-4"></h1>
+        <div class="bg-emerald-700 p-6 rounded-xl mb-6 shadow-inner">
+            <p class="text-lg font-medium">Lauf gestartet!</p>
+            <p class="text-xs text-emerald-200 mt-2">Das Handy sendet das Signal im Vorbeilaufen an das Tablet. Du musst nichts drücken.</p>
+        </div>
+        <div id="status-ping" class="text-sm text-emerald-200 animate-pulse">Verbunden mit Basisstation...</div>
     </div>
 
     <script>
@@ -43,22 +49,33 @@
         const name = urlParams.get('name');
 
         if (name) {
-            // SCHÜLER MODUS
+            // --- SCHÜLER MODUS (SENDET AUTOMATISCH PINGS) ---
             document.getElementById('teacher-view').classList.add('hidden');
             document.getElementById('student-view').classList.remove('hidden');
             document.getElementById('welcome-msg').innerText = `Hallo, ${name}!`;
             
-            let studentId;
-            supabaseClient.from('runden_tracker').select('*').eq('schueler_name', name).single().then(({data}) => {
-                studentId = data.id;
-            });
+            // Schüler registrieren / holen
+            async function initStudent() {
+                let { data } = await supabaseClient.from('runden_tracker').select('*').eq('schueler_name', name).single();
+                let studentId;
+                
+                if (!data) {
+                    let res = await supabaseClient.from('runden_tracker').insert([{ schueler_name: name, runden: 0, last_seen: new Date().toISOString() }]).select().single();
+                    studentId = res.data.id;
+                } else {
+                    studentId = data.id;
+                }
 
-            document.getElementById('lap-btn').onclick = async () => {
-                let { data } = await supabaseClient.from('runden_tracker').select('runden').eq('id', studentId).single();
-                await supabaseClient.from('runden_tracker').update({ runden: data.runden + 1 }).eq('id', studentId);
-            };
+                // Alle 3 Sekunden ein Signal an die Datenbank senden ("Ich bin hier")
+                setInterval(async () => {
+                    await supabaseClient.from('runden_tracker').update({ last_seen: new Date().toISOString() }).eq('id', studentId);
+                    document.getElementById('status-ping').innerText = `Signal aktiv (${new Date().toLocaleTimeString()})`;
+                }, 3000);
+            }
+            initStudent();
+
         } else if (window.location.search.includes('login=true')) {
-            // LOGIN MODUS
+            // --- LOGIN MODUS ---
             document.getElementById('teacher-view').classList.add('hidden');
             document.getElementById('login-view').classList.remove('hidden');
             document.getElementById('join-btn').onclick = () => {
@@ -66,16 +83,50 @@
                 if(n) window.location.href = `?name=${encodeURIComponent(n)}`;
             };
         } else {
-            // LEHRER MODUS
+            // --- LEHRER MODUS (ERKENNT NÄHERUNG / LETZTES SIGNAL) ---
             const loginUrl = window.location.href.split('?')[0] + '?login=true';
             document.getElementById('qr-image').src = `https://api.qrserver.com/v1/create-qr-code/?size=200x200&data=${encodeURIComponent(loginUrl)}`;
             
+            let studentsCache = [];
+            let lastTriggerTime = {}; // Cooldown-Speicher, damit eine Runde nicht doppelt zählt
+
             async function refresh() {
                 let { data } = await supabaseClient.from('runden_tracker').select('*').order('runden', { ascending: false });
-                document.getElementById('live-list').innerHTML = data.map(s => 
-                    `<div class="flex justify-between bg-gray-50 p-3 rounded border">${s.schueler_name} <span class="font-bold">${s.runden} Runden</span></div>`
-                ).join('');
+                if (!data) return;
+                studentsCache = data;
+
+                document.getElementById('live-list').innerHTML = data.map(s => `
+                    <div class="flex justify-between items-center bg-gray-50 p-3 rounded border">
+                        <span class="font-medium">${s.schueler_name}</span> 
+                        <span class="bg-indigo-100 text-indigo-800 font-bold px-3 py-1 rounded-full">${s.runden} Runden</span>
+                    </div>
+                `).join('');
             }
+
+            // Lehrer prüft kontinuierlich, ob ein Schüler gerade "frisch" eingetroffen ist (< 4 Sekunden her)
+            setInterval(async () => {
+                const now = Date.now();
+                for (let s of studentsCache) {
+                    if (s.last_seen) {
+                        let lastSeenTime = new Date(s.last_seen).getTime();
+                        let diffSeconds = (now - lastSeenTime) / 1000;
+
+                        // Wenn das Handy in den letzten 4 Sekunden ein Signal gesendet hat...
+                        if (diffSeconds < 4) {
+                            // Sperrzeit von 20 Sek prüfen (damit der Schüler beim Vorbeilaufen nicht mehrfach gezählt wird)
+                            if (!lastTriggerTime[s.id] || (now - lastTriggerTime[s.id] > 20000)) {
+                                lastTriggerTime[s.id] = now;
+                                
+                                // Runde automatisch erhöhen!
+                                let newLaps = s.runden + 1;
+                                await supabaseClient.from('runden_tracker').update({ runden: newLaps }).eq('id', s.id);
+                                refresh();
+                            }
+                        }
+                    }
+                }
+            }, 2000);
+
             refresh();
             supabaseClient.channel('any').on('postgres_changes', { event: '*', schema: 'public', table: 'runden_tracker' }, refresh).subscribe();
         }
