@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Runden-Tracker Automatik</title>
+    <title>Runden-Tracker Automatik mit Pocket-Modus</title>
     <script src="https://cdn.tailwindcss.com"></script>
     <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
 </head>
@@ -17,7 +17,7 @@
         <div id="qr-container" class="flex justify-center mb-4">
             <img id="qr-image" src="" alt="QR-Code zum Einloggen" class="w-48 h-48">
         </div>
-        <p class="text-sm text-gray-500 mb-6">Lernende scannen diesen Code und stecken das Handy ein.</p>
+        <p class="text-sm text-gray-500 mb-6">Lernende scannen diesen Code und aktivieren den Pocket-Modus.</p>
         
         <h2 class="text-lg font-semibold text-left mb-2">Live-Runden (Automatik):</h2>
         <div id="live-list" class="space-y-2 text-left"></div>
@@ -27,17 +27,32 @@
     <div id="login-view" class="hidden w-full max-w-md bg-white rounded-xl shadow-lg p-6 text-center">
         <h1 class="text-xl font-bold mb-6">Wie heißt du?</h1>
         <input type="text" id="name-input" placeholder="Dein Name" class="w-full border p-3 rounded-lg mb-4 text-lg">
-        <button id="join-btn" class="w-full bg-blue-600 text-white font-bold py-4 rounded-lg shadow">Anmelden & Bereit machen</button>
+        <button id="join-btn" class="w-full bg-blue-600 text-white font-bold py-4 rounded-lg shadow">Anmelden</button>
     </div>
 
-    <!-- SCHÜLER AKTIV (AUTOMATIK) -->
-    <div id="student-view" class="hidden w-full max-w-md bg-emerald-600 text-white rounded-xl shadow-2xl p-8 text-center">
-        <h1 id="welcome-msg" class="text-2xl font-bold mb-4"></h1>
-        <div class="bg-emerald-700 p-6 rounded-xl mb-6 shadow-inner">
-            <p class="text-lg font-medium">Lauf gestartet!</p>
-            <p class="text-xs text-emerald-200 mt-2">Das Handy sendet das Signal im Vorbeilaufen an das Tablet. Du musst nichts drücken.</p>
+    <!-- SCHÜLER AKTIV (POCKET-MODUS AUSWÄHLEN) -->
+    <div id="student-view" class="hidden w-full max-w-md bg-white rounded-xl shadow-xl p-6 text-center">
+        <h1 id="welcome-msg" class="text-2xl font-bold mb-2 text-gray-800"></h1>
+        <p class="text-sm text-gray-500 mb-6">Bereit für den Lauf?</p>
+        
+        <div class="bg-emerald-50 border border-emerald-200 p-4 rounded-xl mb-6 text-left">
+            <p class="text-sm text-emerald-800 font-medium">💡 Anleitung:</p>
+            <p class="text-xs text-emerald-700 mt-1">Klicke auf den Button, um den **Pocket-Modus** zu starten. Der Bildschirm wird schwarz und schont den Akku, während das Handy in der Tasche deine Runden zählt.</p>
         </div>
-        <div id="status-ping" class="text-sm text-emerald-200 animate-pulse">Verbunden mit Basisstation...</div>
+
+        <button id="pocket-btn" class="w-full bg-emerald-600 hover:bg-emerald-700 text-white font-bold py-5 rounded-xl text-lg shadow-lg">
+            📴 Pocket-Modus starten (Bildschirmschutz)
+        </button>
+    </div>
+
+    <!-- VOLLBILD SCHWARZER POCKET-MODUS (OVERLAY) -->
+    <div id="pocket-overlay" class="hidden fixed inset-0 bg-black z-50 flex flex-col items-center justify-center text-white select-none cursor-pointer p-6 text-center">
+        <div class="animate-pulse mb-4">
+            <div class="w-16 h-16 border-4 border-emerald-500 border-t-transparent rounded-full animate-spin mx-auto mb-4"></div>
+            <p class="text-xl font-bold tracking-wider">LÄUFT...</p>
+        </div>
+        <p class="text-xs text-gray-500 mt-8">Stecke das Handy in die Tasche.</p>
+        <p class="text-xs text-gray-600 mt-2">(Zum Entsperren: 3 Sekunden lang auf den Bildschirm drücken)</p>
     </div>
 
     <script>
@@ -49,15 +64,14 @@
         const name = urlParams.get('name');
 
         if (name) {
-            // --- SCHÜLER MODUS (SENDET AUTOMATISCH PINGS) ---
+            // --- SCHÜLER MODUS ---
             document.getElementById('teacher-view').classList.add('hidden');
             document.getElementById('student-view').classList.remove('hidden');
             document.getElementById('welcome-msg').innerText = `Hallo, ${name}!`;
             
-            // Schüler registrieren / holen
+            let studentId;
             async function initStudent() {
                 let { data } = await supabaseClient.from('runden_tracker').select('*').eq('schueler_name', name).single();
-                let studentId;
                 
                 if (!data) {
                     let res = await supabaseClient.from('runden_tracker').insert([{ schueler_name: name, runden: 0, last_seen: new Date().toISOString() }]).select().single();
@@ -66,13 +80,47 @@
                     studentId = data.id;
                 }
 
-                // Alle 3 Sekunden ein Signal an die Datenbank senden ("Ich bin hier")
+                // Hintergrund-Ping (läuft ununterbrochen weiter, auch im Pocket-Modus)
                 setInterval(async () => {
-                    await supabaseClient.from('runden_tracker').update({ last_seen: new Date().toISOString() }).eq('id', studentId);
-                    document.getElementById('status-ping').innerText = `Signal aktiv (${new Date().toLocaleTimeString()})`;
+                    if (studentId) {
+                        await supabaseClient.from('runden_tracker').update({ last_seen: new Date().toISOString() }).eq('id', studentId);
+                    }
                 }, 3000);
             }
             initStudent();
+
+            // Pocket-Modus aktivieren (schwarzes Overlay)
+            const pocketBtn = document.getElementById('pocket-btn');
+            const pocketOverlay = document.getElementById('pocket-overlay');
+
+            pocketBtn.onclick = () => {
+                pocketOverlay.classList.remove('hidden');
+                // Verhindert versehentliches Schließen durch Wischen
+                document.body.style.overflow = 'hidden';
+            };
+
+            // Pocket-Modus beenden (durch 3 Sekunden langes Drücken)
+            let holdTimer;
+            pocketOverlay.addEventListener('touchstart', () => {
+                holdTimer = setTimeout(() => {
+                    pocketOverlay.classList.add('hidden');
+                    document.body.style.overflow = 'auto';
+                    alert("Pocket-Modus beendet.");
+                }, 3000); // 3 Sekunden gedrückt halten
+            });
+            pocketOverlay.addEventListener('touchend', () => {
+                clearTimeout(holdTimer);
+            });
+            // Für Desktop-Tests mit der Maus:
+            pocketOverlay.addEventListener('mousedown', () => {
+                holdTimer = setTimeout(() => {
+                    pocketOverlay.classList.add('hidden');
+                    document.body.style.overflow = 'auto';
+                }, 3000);
+            });
+            pocketOverlay.addEventListener('mouseup', () => {
+                clearTimeout(holdTimer);
+            });
 
         } else if (window.location.search.includes('login=true')) {
             // --- LOGIN MODUS ---
@@ -83,12 +131,12 @@
                 if(n) window.location.href = `?name=${encodeURIComponent(n)}`;
             };
         } else {
-            // --- LEHRER MODUS (ERKENNT NÄHERUNG / LETZTES SIGNAL) ---
+            // --- LEHRER MODUS ---
             const loginUrl = window.location.href.split('?')[0] + '?login=true';
             document.getElementById('qr-image').src = `https://api.qrserver.com/v1/create-qr-code/?size=200x200&data=${encodeURIComponent(loginUrl)}`;
             
             let studentsCache = [];
-            let lastTriggerTime = {}; // Cooldown-Speicher, damit eine Runde nicht doppelt zählt
+            let lastTriggerTime = {};
 
             async function refresh() {
                 let { data } = await supabaseClient.from('runden_tracker').select('*').order('runden', { ascending: false });
@@ -103,7 +151,7 @@
                 `).join('');
             }
 
-            // Lehrer prüft kontinuierlich, ob ein Schüler gerade "frisch" eingetroffen ist (< 4 Sekunden her)
+            // Lehrer prüft Passier-Signal (< 4 Sekunden)
             setInterval(async () => {
                 const now = Date.now();
                 for (let s of studentsCache) {
@@ -111,13 +159,9 @@
                         let lastSeenTime = new Date(s.last_seen).getTime();
                         let diffSeconds = (now - lastSeenTime) / 1000;
 
-                        // Wenn das Handy in den letzten 4 Sekunden ein Signal gesendet hat...
                         if (diffSeconds < 4) {
-                            // Sperrzeit von 20 Sek prüfen (damit der Schüler beim Vorbeilaufen nicht mehrfach gezählt wird)
                             if (!lastTriggerTime[s.id] || (now - lastTriggerTime[s.id] > 20000)) {
                                 lastTriggerTime[s.id] = now;
-                                
-                                // Runde automatisch erhöhen!
                                 let newLaps = s.runden + 1;
                                 await supabaseClient.from('runden_tracker').update({ runden: newLaps }).eq('id', s.id);
                                 refresh();
