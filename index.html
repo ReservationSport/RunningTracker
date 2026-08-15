@@ -68,12 +68,6 @@
         const urlParams = new URLSearchParams(window.location.search);
         const name = urlParams.get('name');
 
-        // Sicherheitsabfrage beim Verlassen der Seite
-        window.addEventListener('beforeunload', function (e) {
-            e.preventDefault();
-            e.returnValue = '';
-        });
-
         if (name) {
             // --- SCHÜLER MODUS ---
             document.getElementById('teacher-view').classList.add('hidden');
@@ -85,23 +79,32 @@
             let lastLapTime = null;
 
             async function initStudent() {
+                // Prüfen, ob der Schüler schon in der Datenbank steht
                 let { data } = await supabaseClient.from('runden_tracker').select('*').eq('schueler_name', name).single();
                 
                 if (!data) {
+                    // Neu anlegen
                     let res = await supabaseClient.from('runden_tracker').insert([{ schueler_name: name, runden: 0, status: 'waiting' }]).select().single();
-                    studentId = res.data.id;
+                    if (res.data) studentId = res.data.id;
                 } else {
                     studentId = data.id;
                 }
 
                 // Polling, ob der Lehrer gestartet hat
                 setInterval(async () => {
+                    if (!studentId) return;
                     let { data: checkData } = await supabaseClient.from('runden_tracker').select('status, runden').eq('id', studentId).single();
                     if (checkData) {
                         if (checkData.status === 'running') {
                             document.getElementById('status-msg').classList.add('hidden');
                             document.getElementById('active-panel').classList.remove('hidden');
                             if (!startTime) startTime = Date.now();
+                            
+                            // Erst wenn der Lauf aktiv ist, aktivieren wir die Sicherheitsabfrage fürs Schließen
+                            window.onbeforeunload = function (e) {
+                                e.preventDefault();
+                                e.returnValue = '';
+                            };
                         }
                     }
                 }, 2000);
@@ -133,50 +136,12 @@
             });
             pocketOverlay.addEventListener('mouseup', () => clearTimeout(holdTimer));
 
-            // Bluetooth-Erkennung mit RSSI-Näherungsfilter (Simuliert über Web Bluetooth API / Signalstärke)
-            async function scanForBeacon() {
-                if (!navigator.bluetooth) return;
-                try {
-                    const device = await navigator.bluetooth.requestDevice({
-                        acceptAllDevices: true,
-                        optionalServices: ['battery_service']
-                    });
-                    // Sobald das Gerät nah genug ist und getriggert wird:
-                    triggerLap();
-                } catch (err) {
-                    // Bluetooth Scan abgebrochen oder nicht verfügbar
-                }
-            }
-
-            async function triggerLap() {
-                if (!startTime) return;
-                const now = Date.now();
-                // Mindestens 15 Sekunden Abstand pro Runde, um Fehltriggern zu verhindern
-                if (lastLapTime && (now - lastLapTime < 15000)) return; 
-
-                lastLapTime = now;
-                let gesamtSekunden = Math.floor((now - startTime) / 1000);
-
-                // Daten in Supabase aktualisieren mit Zeitstempel
-                let { data: current } = await supabaseClient.from('runden_tracker').select('runden').eq('id', studentId).single();
-                let neueRunden = (current?.runden || 0) + 1;
-
-                await supabaseClient.from('runden_tracker').update({ 
-                    runden: neueRunden, 
-                    last_seen: new Date().toISOString(),
-                    letzte_zeit_sekunden: gesamtSekunden 
-                }).eq('id', studentId);
-                
-                // Lokales Backup (falls Verbindung abbricht)
-                localStorage.setItem('local_runden', neueRunden);
-            }
-
         } else if (window.location.search.includes('login=true')) {
             // --- LOGIN MODUS ---
             document.getElementById('teacher-view').classList.add('hidden');
             document.getElementById('login-view').classList.remove('hidden');
             document.getElementById('join-btn').onclick = () => {
-                const n = document.getElementById('name-input').value;
+                const n = document.getElementById('name-input').value.trim();
                 if(n) window.location.href = `?name=${encodeURIComponent(n)}`;
             };
         } else {
@@ -199,7 +164,7 @@
                     <div class="flex justify-between items-center bg-gray-50 p-3 rounded border">
                         <div>
                             <span class="font-medium block">${s.schueler_name}</span>
-                            <span class="text-xs text-gray-500">Zeit: ${s.letzte_zeit_sekunden ? Math.floor(s.letzte_zeit_sekunden/60) + 'm ' + (s.letzte_zeit_sekunden%60) + 's' : '-'}</span>
+                            <span class="text-xs text-gray-500">Status: ${s.status === 'running' ? 'Läuft' : 'Wartet'}</span>
                         </div>
                         <span class="bg-indigo-100 text-indigo-800 font-bold px-3 py-1 rounded-full">${s.runden} Runden</span>
                     </div>
