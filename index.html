@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Runden-Tracker Automatik</title>
+    <title>Runden-Tracker mit Rundenzeiten</title>
     <script src="https://cdn.tailwindcss.com"></script>
     <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
 </head>
@@ -12,9 +12,19 @@
     <!-- LEHRER ANSICHT -->
     <div id="teacher-view" class="w-full max-w-md bg-white rounded-xl shadow-lg p-6 text-center">
         <h1 class="text-2xl font-bold mb-2 text-gray-800">Lehrer-Dashboard</h1>
+        <p class="text-xs text-gray-500 mb-4">(Klicke auf einen Schüler für die Rundenzeiten)</p>
         <div id="qr-container" class="flex justify-center mb-4"><img id="qr-image" src="" alt="QR" class="w-48 h-48"></div>
         <h2 class="text-lg font-semibold text-left mb-2">Live-Runden:</h2>
         <div id="live-list" class="space-y-2 text-left"></div>
+    </div>
+
+    <!-- MODAL FÜR RUNDENZEITEN -->
+    <div id="detail-modal" class="hidden fixed inset-0 bg-black/50 z-50 flex items-center justify-center p-4">
+        <div class="bg-white w-full max-w-md rounded-xl p-6 shadow-xl relative">
+            <h2 id="modal-title" class="text-xl font-bold mb-4 text-gray-800">Rundenzeiten</h2>
+            <div id="modal-times-list" class="space-y-2 max-h-60 overflow-y-auto mb-4 border p-2 rounded bg-gray-50 text-left text-sm"></div>
+            <button onclick="closeModal()" class="w-full bg-gray-600 text-white font-bold py-3 rounded-lg">Schließen</button>
+        </div>
     </div>
 
     <!-- SCHÜLER LOGIN -->
@@ -44,6 +54,8 @@
         const urlParams = new URLSearchParams(window.location.search);
         const name = urlParams.get('name');
 
+        window.lastTriggerTime = {};
+
         if (name) {
             document.getElementById('teacher-view').classList.add('hidden');
             document.getElementById('student-view').classList.remove('hidden');
@@ -52,18 +64,15 @@
             let studentId;
             async function initStudent() {
                 let { data } = await supabaseClient.from('runden_tracker').select('*').eq('schueler_name', name);
-                
                 if (data && data.length > 0) {
                     studentId = data[0].id;
                 } else {
                     let res = await supabaseClient.from('runden_tracker').insert([{ schueler_name: name, runden: 0, last_seen: new Date().toISOString() }]).select();
                     studentId = res.data[0].id;
                 }
-
                 setInterval(async () => {
                     await supabaseClient.from('runden_tracker').update({ last_seen: new Date().toISOString() }).eq('id', studentId);
-                    console.log("Ping gesendet...");
-                }, 3000);
+                }, 2000);
             }
             initStudent();
 
@@ -89,21 +98,62 @@
             async function refresh() {
                 let { data } = await supabaseClient.from('runden_tracker').select('*').order('runden', { ascending: false });
                 if (!data) return;
+                
                 document.getElementById('live-list').innerHTML = data.map(s => `
-                    <div class="flex justify-between bg-gray-50 p-3 rounded border">
+                    <div onclick="openStudentDetails(${s.id}, '${s.schueler_name}')" class="flex justify-between bg-gray-50 p-3 rounded border cursor-pointer hover:bg-blue-50 transition">
                         <span>${s.schueler_name}</span> <b>${s.runden} Runden</b>
                     </div>`).join('');
                 
                 const now = Date.now();
                 data.forEach(async (s) => {
-                    if (s.last_seen && (now - new Date(s.last_seen).getTime() < 4000)) {
-                        // Anti-Spam: Nur alle 20s zählen
-                        await supabaseClient.from('runden_tracker').update({ runden: s.runden + 1, last_seen: '2000-01-01T00:00:00Z' }).eq('id', s.id);
+                    if (!s.last_seen) return;
+                    let lastSeenTime = new Date(s.last_seen).getTime();
+                    let diffSeconds = (now - lastSeenTime) / 1000;
+                    let isStrongSignal = diffSeconds < 2.5;
+
+                    if (isStrongSignal) {
+                        if (!window.lastTriggerTime[s.id] || (now - window.lastTriggerTime[s.id] > 10000)) {
+                            window.lastTriggerTime[s.id] = now;
+                            let newRounds = s.runden + 1;
+                            
+                            // Haupttabelle updaten
+                            await supabaseClient.from('runden_tracker').update({ runden: newRounds }).eq('id', s.id);
+                            
+                            // Rundenzeit in die Historie eintragen
+                            await supabaseClient.from('runden_zeiten').insert([{ student_id: s.id, runden_nummer: newRounds }]);
+                        }
                     }
                 });
             }
-            setInterval(refresh, 2000);
+            setInterval(refresh, 1000);
             supabaseClient.channel('any').on('postgres_changes', { event: '*', schema: 'public', table: 'runden_tracker' }, refresh).subscribe();
+        }
+
+        // Modal öffnen und Rundenzeiten laden
+        async function openStudentDetails(studentId, studentName) {
+            document.getElementById('modal-title').innerText = `Rundenzeiten für ${studentName}`;
+            document.getElementById('modal-times-list').innerHTML = 'Lade Zeiten...';
+            document.getElementById('detail-modal').classList.remove('hidden');
+
+            let { data, error } = await supabaseClient
+                .from('runden_zeiten')
+                .select('*')
+                .eq('student_id', studentId)
+                .order('runden_nummer', { ascending: true });
+
+            if (!data || data.length === 0) {
+                document.getElementById('modal-times-list').innerHTML = '<p class="text-gray-500">Noch keine Runden aufgezeichnet.</p>';
+                return;
+            }
+
+            document.getElementById('modal-times-list').innerHTML = data.map(r => {
+                let timeString = new Date(r.created_at).toLocaleTimeString('de-DE');
+                return `<div class="flex justify-between border-b py-1"><span>Runde ${r.runden_nummer}</span> <b>${timeString} Uhr</b></div>`;
+            }).join('');
+        }
+
+        function closeModal() {
+            document.getElementById('detail-modal').classList.add('hidden');
         }
     </script>
 </body>
